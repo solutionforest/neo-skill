@@ -1,6 +1,6 @@
 # neo-skill
 
-AI coding assistant instructions for [Neo](https://github.com/solutionforest/neo) — a CLI that deploys apps, manages servers, configures services, and handles the full lifecycle of Docker-based applications over SSH.
+AI coding assistant instructions for [Neo](https://neo.vxero.dev) — a CLI that deploys apps, manages servers, configures services, and handles the full lifecycle of Docker-based applications over SSH.
 
 Works with **Claude Code, GitHub Copilot, Cursor, Windsurf, Cline, OpenAI Codex**, and any other AI assistant that supports custom instructions.
 
