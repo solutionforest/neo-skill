@@ -373,10 +373,7 @@ volumes:
     path: /app/data                         #   container path (required)
     mount: /mnt/ssd/data                    #   host path on server (optional)
 
-# Background workers (share app image, env vars, and volumes — different command)
-# Container naming: app-{name}-worker-{workername}  e.g. app-myapp-worker-queue
-# View logs: neo logs myapp --worker queue
-# Run one-off: neo run myapp -w queue -- php artisan queue:flush
+# Background workers (share app image, different command)
 workers:
   queue:
     command: "node worker.js"
@@ -517,34 +514,19 @@ environments:
 5. Restart the app after linking: `neo restart <app>`
 6. Access remotely via tunnel: `neo tunnel <svc>` then connect with local DB tools
 
-### Worker containers always show "unhealthy"
-Some Docker base images (e.g., `serversideup/php:8.4-frankenphp`) include a built-in `HEALTHCHECK` that tests for a running web server (e.g., checks for `php artisan octane:start`). When neo starts worker containers from the same image, they run a different command (e.g., `php artisan queue:work`) — not a web server — so the inherited healthcheck always fails.
-
-Fix: add `HEALTHCHECK NONE` to your `Dockerfile` to disable the base image's check. Neo performs its own `/up` health check during deploy; workers don't need one.
-
-```dockerfile
-EXPOSE 8080
-HEALTHCHECK NONE
-```
-
 ### SSH connection issues
 1. Ensure your SSH key is loaded: `ssh-add -l`
 2. Neo tries: ssh-agent, then `~/.ssh/id_ed25519`, then `~/.ssh/id_rsa`, then password
 3. Test manually: `ssh root@<server-ip>`
 4. Check that the server's SSH port matches config (default: 22)
 5. Use a specific key: `neo init user@host --key /path/to/key`
-6. **Fresh cloud VPS (e.g., DigitalOcean)**: The droplet is provisioned with your local SSH key, not neo's key (`~/.neo/neo_ed25519`). Before running `neo init`, add neo's key to the server:
-   ```bash
-   ssh root@<ip> "echo '$(cat ~/.neo/neo_ed25519.pub)' >> ~/.ssh/authorized_keys"
-   ```
-7. **"HOST KEY HAS CHANGED"**: Clear the cached key with `ssh-keygen -R <ip>` then retry.
 
 ### Team access issues
-1. Teammate runs `neo key show` to get their public key (generates one if needed)
-2. Admin runs `neo key add "<pubkey>"` to authorize on the server
-3. Check who has access: `neo key list`
-4. Revoke access: `neo key remove <number>`
-5. Never removes your own key — neo guards against self-lockout
+1. Teammate's key not working: verify they ran `neo key show` — it generates the key if missing
+2. Confirm the key was added: `neo key list` — check the server shows their key
+3. "Permission denied" after adding: ensure teammate's `.neo.yml` has `server: root@<ip>` (their own neo key is used for auth)
+4. Revoke access: `neo key list` (find the number), then `neo key remove <number>`
+5. A fresh install means a new key — teammate must run `neo key show` again and you must `neo key add` again
 
 ---
 
