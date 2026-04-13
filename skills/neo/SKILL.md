@@ -380,8 +380,9 @@ volumes:
     mount: /mnt/ssd/data                    #   host path on server (optional)
 
 # Background workers (share app image, different command)
+# Container name: app-{appname}-worker-{key}  e.g. app-myapp-worker-queue
 workers:
-  queue:
+  queue:                            # → container: app-myapp-worker-queue
     command: "node worker.js"
     restart: always
     health_check: "curl -f http://localhost:9090/health"
@@ -522,10 +523,22 @@ environments:
 
 ### SSH connection issues
 1. Ensure your SSH key is loaded: `ssh-add -l`
-2. Neo tries: ssh-agent, then `~/.ssh/id_ed25519`, then `~/.ssh/id_rsa`, then password
+2. Neo tries: ssh-agent → neo's own key → all private keys in `~/.ssh/` → password
 3. Test manually: `ssh root@<server-ip>`
 4. Check that the server's SSH port matches config (default: 22)
-5. Use a specific key: `neo init user@host --key /path/to/key`
+5. Use a specific key: `neo init --key ~/.ssh/your_key user@host`
+
+### Fresh VPS / "unable to authenticate"
+Cloud providers (DigitalOcean, Hetzner, Vultr, etc.) provision your droplet with **your** personal SSH key, not neo's key. Neo automatically scans all keys in `~/.ssh/` so this usually works. If it doesn't:
+1. If your cloud key is at a non-standard path: `neo init --key ~/.ssh/my_cloud_key root@<ip>`
+2. After `neo init` succeeds, neo deploys its own key (`~/.neo/neo_ed25519`) to the server — all future commands use that key automatically, no extra steps needed.
+
+### "HOST KEY HAS CHANGED"
+Happens when the server was rebuilt or the IP was reused (common with cloud providers):
+```
+Fix: ssh-keygen -R <ip>
+Then: neo init root@<ip>
+```
 
 ### Team access issues
 1. Teammate runs `neo key show` to get their public key (generates one if needed)
