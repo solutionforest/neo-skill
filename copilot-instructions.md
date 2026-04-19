@@ -57,6 +57,7 @@ neo deploy [path]             Deploy a Dockerfile-based project (blue-green, zer
       --to <env>                 Named environment from .neo.yml (e.g. staging, production)
       --env-only                 Restart with updated env/config only — skip rebuild
       --all                      Build once, deploy to all .neo.yml environments in parallel
+      --parallel N               Max concurrent deploys with --all (default: 3; use 1 for small servers)
 
 neo install                   Interactive app template picker
 neo list                      List all apps and shared services
@@ -99,6 +100,11 @@ neo domain <app> <domain>     Set domain (auto-provisions SSL via Caddy)
   --remove                       Remove a specific domain without affecting others
   --cert <path>                  Path to SSL certificate file (PEM)
   --key <path>                   Path to SSL private key file (PEM)
+
+neo redirect add <from> <to>   Redirect a domain to another URL (auto-SSL on source domain)
+  --temporary                    Use 302 redirect (default: 301 permanent)
+neo redirect list               Show all configured redirects
+neo redirect remove <domain>    Remove a redirect
 ```
 
 ### Environment Variables
@@ -154,6 +160,28 @@ neo dev                       Run app locally via Docker (auto-detects compose o
 neo dev down                  Stop and clean up all dev containers
 ```
 
+### Maintenance
+```
+neo prune                     Remove old Docker images from server to free disk space
+  --keep N                      Images to keep per app (default: 2)
+  --dry-run                     Preview what would be deleted without making changes
+  --force                       Skip confirmation prompt
+```
+
+### Team Access
+```
+neo key show                  Generate and print your Neo public key (share with admin)
+neo key add "<pubkey>"        Authorize a teammate's public key on the server
+neo key list                  List all authorized keys (marks your own)
+neo key remove <number>       Revoke a key by its number from neo key list
+```
+
+**Team workflow:**
+1. Teammate runs `neo key show` — copies the one-line public key
+2. Admin runs `neo key add "<key>"` — authorizes on the server
+3. Admin shares `server: root@<ip>` for teammate's `.neo.yml`
+4. Teammate deploys immediately with their own neo key — no key files to copy
+
 ### Security
 ```
 neo firewall install          Install CrowdSec + nftables bouncer
@@ -178,6 +206,8 @@ Feature gates:
 - **Backups**: Free = blocked, Plus = unlimited
 - **Parallel uploads**: Free = 2 streams, Plus = 5 streams
 - Max 2 device activations per license key
+
+**Expired license**: All Plus features remain active after expiry — nothing is blocked. A warning banner is shown at the start of every command. `neo plus status` shows `Plus (expired)`. Renew at neo.vxero.dev.
 
 ### Other
 ```
@@ -242,22 +272,61 @@ For custom SSL certs: `neo domain my-app example.com --cert cert.pem --key key.p
 Workers and sidecars from `.neo.yml` are automatically started in standalone mode. The `dev:` section in `.neo.yml` lets you override ports, env vars, and volume mount paths for local development.
 
 ### Multi-Environment Deploy
-Define environments in `.neo.yml`:
+
+**Rules when `environments:` are defined:**
+- Root-level `server:` and `domains:` are **ignored** — neo errors with instructions to move them
+- Every environment **must** declare its own `server:`
+- Root-level `env:`, `workers:`, and `volumes:` are shared across all environments
+
 ```yaml
+name: my-app
+port: 8080
+
+env:                          # shared across all environments
+  DB_CONNECTION: sqlite
+
+workers:                      # shared — all environments get these workers
+  queue:
+    command: php artisan queue:work
+
+volumes:                      # shared — each environment gets its own named volume
+  storage: /var/www/html/storage
+
 environments:
-  staging:
-    server: staging-server
-    domain: staging.example.com
-    env:
-      APP_ENV: staging
   production:
     server: prod-server
-    domain: app.example.com
+    domains:
+      - app.example.com
+      - www.example.com
     env:
       APP_ENV: production
+
+  staging:
+    name: my-app-staging      # separate container name = separate volumes
+    server: staging-server
+    domains:
+      - staging.example.com
+    env:
+      APP_ENV: staging
 ```
-Deploy to one: `neo deploy --to staging`
-Deploy to all: `neo deploy --all`
+
+Deploy to one: `neo deploy --env production`
+Deploy to all: `neo deploy --all` (builds image once, deploys to all environments; `--parallel N` caps concurrent deploys, default 3 — use 1 for small servers)
+
+**No `environments:`** — root `server:`/`domains:` work normally as before.
+
+### Horizontal Scaling
+Add `scale: N` to `.neo.yml` to run multiple app replicas. Caddy round-robin load-balances across them automatically.
+
+```yaml
+scale: 3   # runs app-myapp-0, app-myapp-1, app-myapp-2
+```
+
+- Zero-downtime redeploy: all `-next` replicas start and pass health checks before old ones are removed
+- Scale changes on redeploy (1→3, 3→1) are handled automatically
+- `start`, `stop`, `restart`, `remove` all operate on the full replica set
+- Can be overridden per environment: `environments.production.scale: 3`
+- WebSocket / WSS works automatically — Caddy proxies upgrade headers transparently
 
 ### Available App Templates
 `neo install` offers these pre-configured templates:
@@ -274,10 +343,11 @@ All fields are optional. Place in project root.
 ```yaml
 # App identity
 name: my-app                    # App name (default: directory name)
-server: production              # Target server name from neo config
+server: production              # Target server — omit if using environments:
+scale: 3                        # Number of replicas (default: 1, load-balanced by Caddy)
 
 # Networking
-domain: app.example.com         # Single domain
+domain: app.example.com         # Single domain — omit if using environments:
 domains:                        # Multiple domains (takes precedence over domain)
   - app.example.com
   - www.example.com
@@ -320,8 +390,9 @@ volumes:
     mount: /mnt/ssd/data                    #   host path on server (optional)
 
 # Background workers (share app image, different command)
+# Container name: app-{appname}-worker-{key}  e.g. app-myapp-worker-queue
 workers:
-  queue:
+  queue:                            # → container: app-myapp-worker-queue
     command: "node worker.js"
     restart: always
     health_check: "curl -f http://localhost:9090/health"
@@ -373,12 +444,18 @@ dev:
     uploads: ./uploads          # Short form: inherits container path from top-level
     cache: ./tmp/cache:/tmp/cache  # Full form: local:container dev-only mount
 
-# Named deployment environments (override any top-level field)
+# Named deployment environments
+# IMPORTANT: when environments: are defined —
+#   - root server: and domains: are IGNORED (neo errors if present)
+#   - every environment MUST have server:
+#   - root env:, workers:, volumes: are inherited by all environments
 environments:
   staging:
-    name: my-app-staging        # Override container name for this env
-    server: staging-server
-    domain: staging.example.com
+    name: my-app-staging        # Separate container name = separate Docker volumes
+    server: staging-server      # Required
+    domains:
+      - staging.example.com
+    scale: 1                    # Override replica count for this env
     env:
       APP_ENV: staging
     env_file: .env.staging
@@ -390,12 +467,12 @@ environments:
     hooks:
       pre_build: ["npm test"]
   production:
-    server: prod-server
-    domain: app.example.com
+    server: prod-server         # Required
     domains:
       - app.example.com
       - www.example.com
     https: true
+    scale: 3                    # 3 replicas load-balanced by Caddy
     env:
       APP_ENV: production
     ssl:
@@ -415,6 +492,12 @@ environments:
     health:
       cmd: "curl -f http://localhost:8080/health"
       interval: 30s
+
+  # Server groups: deploy one environment to multiple servers simultaneously
+  web:
+    servers: [web-1, web-2, web-3]   # all servers get the deploy; --server targets one
+    domains:
+      - app.example.com
 ```
 
 **Dev env var priority** (highest wins): `dev.env` > `dev.env_file` > top-level `env` > top-level `env_file` > auto-loaded `.env`
@@ -437,6 +520,7 @@ environments:
 2. Check server disk space and memory: `neo run <app> -- df -h` or `neo ssh`
 3. For large images, deploy may timeout during transfer — check network
 4. Use `--debug` flag for detailed SSH command logging
+5. For disk space issues: `neo prune --dry-run` to preview, `neo prune` to clean up old images
 
 ### Domain/SSL not working
 1. Verify DNS: `dig +short app.example.com` should return your server IP
@@ -456,10 +540,29 @@ environments:
 
 ### SSH connection issues
 1. Ensure your SSH key is loaded: `ssh-add -l`
-2. Neo tries: ssh-agent, then `~/.ssh/id_ed25519`, then `~/.ssh/id_rsa`, then password
+2. Neo tries: ssh-agent → neo's own key → all private keys in `~/.ssh/` → password
 3. Test manually: `ssh root@<server-ip>`
 4. Check that the server's SSH port matches config (default: 22)
-5. Use a specific key: `neo init user@host --key /path/to/key`
+5. Use a specific key: `neo init --key ~/.ssh/your_key user@host`
+
+### Fresh VPS / "unable to authenticate"
+Cloud providers (DigitalOcean, Hetzner, Vultr, etc.) provision your droplet with **your** personal SSH key, not neo's key. Neo automatically scans all keys in `~/.ssh/` so this usually works. If it doesn't:
+1. If your cloud key is at a non-standard path: `neo init --key ~/.ssh/my_cloud_key root@<ip>`
+2. After `neo init` succeeds, neo deploys its own key (`~/.neo/neo_ed25519`) to the server — all future commands use that key automatically, no extra steps needed.
+
+### "HOST KEY HAS CHANGED"
+Happens when the server was rebuilt or the IP was reused (common with cloud providers):
+```
+Fix: ssh-keygen -R <ip>
+Then: neo init root@<ip>
+```
+
+### Team access issues
+1. Teammate's key not working: verify they ran `neo key show` — it generates the key if missing
+2. Confirm the key was added: `neo key list` — check the server shows their key
+3. "Permission denied" after adding: ensure teammate's `.neo.yml` has `server: root@<ip>` (their own neo key is used for auth)
+4. Revoke access: `neo key list` (find the number), then `neo key remove <number>`
+5. A fresh install means a new key — teammate must run `neo key show` again and you must `neo key add` again
 
 ---
 

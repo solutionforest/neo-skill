@@ -4,6 +4,20 @@ AI coding assistant instructions for [Neo](https://neo.vxero.dev) — a CLI that
 
 Works with **Claude Code, GitHub Copilot, Cursor, Windsurf, Cline, OpenAI Codex**, and any other AI assistant that supports custom instructions.
 
+## Install Neo
+
+```bash
+curl -fsSL https://get.vxero.dev/neo/install.sh | sh
+```
+
+Installs the latest `neo` binary to `/usr/local/bin`. Supports macOS, Linux, and Windows (Git Bash).
+
+```bash
+neo init root@<your-server-ip>    # set up your first server
+neo deploy                         # deploy a project with a Dockerfile
+neo help                           # grouped command reference
+```
+
 ## What It Does
 
 Once installed, your AI assistant understands:

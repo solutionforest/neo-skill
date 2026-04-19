@@ -57,6 +57,7 @@ neo deploy [path]             Deploy a Dockerfile-based project (blue-green, zer
       --to <env>                 Named environment from .neo.yml (e.g. staging, production)
       --env-only                 Restart with updated env/config only — skip rebuild
       --all                      Build once, deploy to all .neo.yml environments in parallel
+      --parallel N               Max concurrent deploys with --all (default: 3; use 1 for small servers)
 
 neo install                   Interactive app template picker
 neo list                      List all apps and shared services
@@ -99,6 +100,11 @@ neo domain <app> <domain>     Set domain (auto-provisions SSL via Caddy)
   --remove                       Remove a specific domain without affecting others
   --cert <path>                  Path to SSL certificate file (PEM)
   --key <path>                   Path to SSL private key file (PEM)
+
+neo redirect add <from> <to>   Redirect a domain to another URL (auto-SSL on source domain)
+  --temporary                    Use 302 redirect (default: 301 permanent)
+neo redirect list               Show all configured redirects
+neo redirect remove <domain>    Remove a redirect
 ```
 
 ### Environment Variables
@@ -154,6 +160,14 @@ neo dev                       Run app locally via Docker (auto-detects compose o
 neo dev down                  Stop and clean up all dev containers
 ```
 
+### Maintenance
+```
+neo prune                     Remove old Docker images from server to free disk space
+  --keep N                      Images to keep per app (default: 2)
+  --dry-run                     Preview what would be deleted without making changes
+  --force                       Skip confirmation prompt
+```
+
 ### Team Access
 ```
 neo key show                  Generate and print your Neo public key (share with admin)
@@ -192,6 +206,8 @@ Feature gates:
 - **Backups**: Free = blocked, Plus = unlimited
 - **Parallel uploads**: Free = 2 streams, Plus = 5 streams
 - Max 2 device activations per license key
+
+**Expired license**: All Plus features remain active after expiry — nothing is blocked. A warning banner is shown at the start of every command. `neo plus status` shows `Plus (expired)`. Renew at neo.vxero.dev.
 
 ### Other
 ```
@@ -295,7 +311,7 @@ environments:
 ```
 
 Deploy to one: `neo deploy --env production`
-Deploy to all: `neo deploy --all` (builds image once, deploys in parallel)
+Deploy to all: `neo deploy --all` (builds image once, deploys to all environments; `--parallel N` caps concurrent deploys, default 3 — use 1 for small servers)
 
 **No `environments:`** — root `server:`/`domains:` work normally as before.
 
@@ -476,6 +492,12 @@ environments:
     health:
       cmd: "curl -f http://localhost:8080/health"
       interval: 30s
+
+  # Server groups: deploy one environment to multiple servers simultaneously
+  web:
+    servers: [web-1, web-2, web-3]   # all servers get the deploy; --server targets one
+    domains:
+      - app.example.com
 ```
 
 **Dev env var priority** (highest wins): `dev.env` > `dev.env_file` > top-level `env` > top-level `env_file` > auto-loaded `.env`
@@ -498,6 +520,7 @@ environments:
 2. Check server disk space and memory: `neo run <app> -- df -h` or `neo ssh`
 3. For large images, deploy may timeout during transfer — check network
 4. Use `--debug` flag for detailed SSH command logging
+5. For disk space issues: `neo prune --dry-run` to preview, `neo prune` to clean up old images
 
 ### Domain/SSL not working
 1. Verify DNS: `dig +short app.example.com` should return your server IP
