@@ -100,6 +100,21 @@ neo domain <app> <domain>     Set domain (auto-provisions SSL via Caddy)
   --remove                       Remove a specific domain without affecting others
   --cert <path>                  Path to SSL certificate file (PEM)
   --key <path>                   Path to SSL private key file (PEM)
+  --https                        Switch the existing route to HTTPS at the origin
+  --http-only                    Switch the existing route to HTTP only at the origin
+  --cloudflare-flexible          HTTP origin for Cloudflare Flexible SSL; forwards the
+                                   HTTPS scheme to the app (X-Forwarded-Proto: https)
+
+neo caddy dns <domain>         Wildcard HTTPS via ACME DNS-01 (free wildcard cert)
+  --provider <name>              DNS provider (default: cloudflare)
+  --token-env <var>              Local env var holding the DNS API token
+                                   (default: provider-specific, e.g. CLOUDFLARE_API_TOKEN)
+  --app <app>                    Bind the wildcard *.domain to an app after setup
+
+neo caddy ondemand <domain>    Guarded on-demand wildcard TLS for dynamic subdomains
+  --app <app>                    App to bind the wildcard to (auto-derives the ask URL)
+  --ask-url <url>                URL Caddy calls to allow/deny cert issuance (required if no --app)
+  --replace-domains              Replace the app's extra domains with the wildcard
 
 neo redirect add <from> <to>   Redirect a domain to another URL (auto-SSL on source domain)
   --temporary                    Use 302 redirect (default: 301 permanent)
@@ -264,6 +279,30 @@ To remove one: `neo domain my-app old.example.com --remove`
 For a quick test domain without DNS: `neo deploy --temp` assigns `{app}.{ip}.sslip.io` with auto-SSL.
 For custom SSL certs: `neo domain my-app example.com --cert cert.pem --key key.pem`
 
+### Wildcard HTTPS
+
+For `*.example.com` (one cert covering every subdomain), pick one of two approaches:
+
+**Option A — ACME DNS-01 (recommended for known/internal wildcards).** Gets a real Let's Encrypt wildcard cert up front. Requires a DNS provider API token (currently Cloudflare). The token is read from a local env var and copied to the server as a root-only file — never typed interactively.
+```
+CLOUDFLARE_API_TOKEN=... neo --server prod caddy dns example.com --app my-app
+```
+
+**Option B — Guarded on-demand TLS (for dynamic tenant subdomains).** Caddy issues a real cert for each subdomain on first request, gated by an ask URL your app controls (returns 200 only for allowed hosts). No need to pre-list hostnames.
+```
+neo --server prod caddy ondemand example.com --app my-app --replace-domains
+```
+
+Both are **idempotent** and **merge** into Caddy's TLS config — independent wildcard trees coexist on one server (e.g. `*.example.com` for prod and `*.staging.example.com` for staging, each its own cert). Re-run once per tree. Once configured, `neo domain my-app "*.example.com" --add` binds a wildcard to an app. Plain `neo domain` with a `*.` hostname is guarded — it requires DNS-01 or on-demand TLS to be set up first.
+
+### Behind Cloudflare (Flexible SSL)
+
+If the app sits behind Cloudflare in **Flexible SSL** mode (HTTPS at Cloudflare's edge, HTTP to the origin), serve the origin over HTTP only while still telling the app it's on HTTPS:
+```
+neo domain my-app --cloudflare-flexible
+```
+This sets an HTTP-only origin route and injects `X-Forwarded-Proto: https`, `X-Forwarded-Ssl: on`, and `X-Forwarded-Port: 443` so the app generates correct `https://` URLs. Equivalent `.neo.yml` field: `edge_https: true`. To flip an existing app's origin scheme without changing its domain: `neo domain my-app --https` or `neo domain my-app --http-only`.
+
 ### Local Development
 `neo dev` runs the app locally via Docker in two modes:
 - **Compose mode** — if `docker-compose.yml` exists, wraps `docker compose up`
@@ -353,6 +392,7 @@ domains:                        # Multiple domains (takes precedence over domain
   - www.example.com
 port: 8080                      # Container port (default: auto-detect from Dockerfile EXPOSE)
 https: true                     # null=default, true=force HTTPS, false=HTTP-only
+edge_https: true                # HTTP origin behind an HTTPS edge (Cloudflare Flexible SSL)
 
 # Environment
 env_file: .env.production       # Load env vars from file
@@ -472,6 +512,7 @@ environments:
       - app.example.com
       - www.example.com
     https: true
+    edge_https: true            # set when this env sits behind Cloudflare Flexible SSL
     scale: 3                    # 3 replicas load-balanced by Caddy
     env:
       APP_ENV: production
@@ -529,6 +570,8 @@ environments:
 4. Check Caddy logs: `neo ssh` then `docker logs neo-caddy`
 5. For quick testing, use `--temp` flag for an auto-SSL sslip.io domain
 6. For custom certs: `neo domain <app> <domain> --cert cert.pem --key key.pem`
+7. Wildcard (`*.example.com`) needs DNS-01 or on-demand TLS first — set up with `neo caddy dns` or `neo caddy ondemand`, else Caddy can't issue the cert
+8. Redirect loop / "too many redirects" behind Cloudflare: you're on Flexible SSL but the origin expects HTTPS — switch the origin to HTTP with `neo domain <app> --cloudflare-flexible` (or `edge_https: true`)
 
 ### Service linking issues
 1. After `neo service link`, check injected vars: `neo env <app>` — look for `DATABASE_URL`
@@ -572,5 +615,7 @@ Then: neo init root@<ip>
 - **Shared service vs bundled**: Shared services (`neo service create`) save RAM on small VMs when multiple apps need the same database. Bundled services (via templates) are simpler for single-app setups.
 - **`neo dev` vs raw `docker compose`**: Use `neo dev` to get automatic env loading, volume mounting, worker/sidecar startup, and `.neo.yml` integration. Use raw compose if you need compose-specific features neo doesn't wrap.
 - **Single domain vs multi-domain**: Use `domain:` for one domain. Use `domains:` list when an app needs multiple domains (e.g., `example.com` + `www.example.com`). Use `--add`/`--remove` flags for incremental changes.
+- **Wildcard: DNS-01 vs on-demand**: Use `neo caddy dns` (ACME DNS-01) when you know the wildcard up front and have a DNS provider token — one real wildcard cert, works for internal subdomains too. Use `neo caddy ondemand` for unbounded/dynamic tenant subdomains where you can't pre-list hostnames — Caddy issues per-host certs on demand, gated by your app's ask URL.
+- **Cloudflare Flexible SSL**: If Cloudflare terminates TLS at its edge and talks HTTP to your origin, use `--cloudflare-flexible` / `edge_https: true` — origin serves HTTP but the app still sees `https` via forwarded headers. Without it you get redirect loops.
 - **Neo+ features**: `neo backup`, `neo restore`, and multi-server require a Neo+ license. Free tier: 1 server, 2 parallel upload streams. Run `neo plus activate <key>` to unlock.
 - **Debugging**: Add `--debug` to any command to see the SSH commands being executed. Use `neo logs <app> -g "error"` to filter log output. Use `neo status --json` for machine-readable health data.

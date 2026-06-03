@@ -22,7 +22,7 @@ neo help                           # grouped command reference
 
 Once installed, your AI assistant understands:
 
-- **All 30+ neo commands** — deploy, init, env, service, domain, dev, firewall, backup, tunnel, etc.
+- **All 30+ neo commands** — deploy, init, env, service, domain, caddy (wildcard SSL), dev, firewall, backup, tunnel, etc.
 - **`.neo.yml` configuration** — every field, volume formats, workers, sidecars, hooks, environments
 - **Common workflows** — first-time server setup, deploying projects, adding databases, SSL, multi-env deploys
 - **Troubleshooting** — deploy failures, domain/SSL issues, service linking, SSH problems
