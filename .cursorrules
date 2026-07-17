@@ -14,9 +14,10 @@ Tailor all advice to what you find. If the user has a `.neo.yml`, reference thei
 
 ## Important Rules
 
-- **Present commands for the user to run** — do not execute destructive operations (`neo init`, `neo deploy`, `neo remove`, `neo service remove`) directly
+- **Present commands for the user to run** — do not execute destructive operations (`neo init`, `neo deploy`, `neo remove`, `neo service remove`, `neo destroy`) directly
 - **Read-only commands are safe to run**: `neo version`, `neo servers`, `neo list`, `neo env <app>`, `neo status`, `neo volumes`, `neo help`
 - When generating `.neo.yml` configs, use only documented fields (see reference below)
+- **Neo is free but requires a free license.** The first command prompts for an email and issues a key instantly (or run `neo activate`). In CI / no-TTY it prints a "run `neo activate`" message instead. Set `NEO_DEV_PLUS=true` to bypass in local dev.
 
 ---
 
@@ -34,11 +35,22 @@ neo init <user@host>          Initialize a remote server (installs Docker + Cadd
   --name <name>                 Server name (default: derived from host)
   --key <path>                  Path to SSH private key file
 
+neo attach <user@host>        Register an already-initialized server (no Docker/Caddy
+                                install, never overwrites remote state — safe on a live server)
+  --name <name>                 Server name (default: derived from host)
+
+neo destroy [server]          Tear down a server (removes everything neo installed)
+                                Level 1: remove neo, keep data volumes + Docker
+                                Level 2 (full wipe): also prune data, uninstall CrowdSec + Docker
+                                Requires typing the host to confirm; removes it from local config
+
 neo servers                   List configured servers
 neo servers remove <name>     Remove a server from config
 neo use <name>                Switch active server
 neo ssh                       SSH into the current server
 neo config                    Manage local config
+neo config init               Scaffold a commented .neo.yml (no docker-compose.yml needed)
+  --yes                         Accept defaults non-interactively
 neo config generate           Generate .neo.yml from docker-compose.yml
   --compose <path>              Path to docker-compose.yml (auto-detected if not set)
 ```
@@ -105,6 +117,10 @@ neo domain <app> <domain>     Set domain (auto-provisions SSL via Caddy)
   --cloudflare-flexible          HTTP origin for Cloudflare Flexible SSL; forwards the
                                    HTTPS scheme to the app (X-Forwarded-Proto: https)
 
+neo caddy update               Pull the latest caddy:2-alpine and recreate neo-caddy
+                                 (routes + TLS certs preserved; rebuilds a custom DNS
+                                 build from its stored Dockerfile with a fresh base layer)
+
 neo caddy dns <domain>         Wildcard HTTPS via ACME DNS-01 (free wildcard cert)
   --provider <name>              DNS provider (default: cloudflare)
   --token-env <var>              Local env var holding the DNS API token
@@ -161,8 +177,8 @@ The tunnel command forwards a remote database port to localhost so you can conne
 
 ### Data & Backup
 ```
-neo backup <app>              Backup data volumes (requires Neo+)
-neo restore <app> <file>      Restore from backup (requires Neo+)
+neo backup <app>              Backup data volumes
+neo restore <app> <file>      Restore from backup
 neo volumes                   List Docker volumes on the server
 neo volumes mount <vol> <path>  Mount a Docker volume to a host path
 ```
@@ -200,6 +216,8 @@ neo key remove <number>       Revoke a key by its number from neo key list
 ### Security
 ```
 neo firewall install          Install CrowdSec + nftables bouncer
+neo firewall update           Upgrade CrowdSec + bouncer (apt/dnf), refresh hub content
+                                (cscli hub update && upgrade), restart services
 neo firewall status           Show CrowdSec status
 neo firewall block <ip>       Manually ban an IP
   --reason <text>               Reason for the block
@@ -208,21 +226,26 @@ neo firewall list             List active bans
 neo stealth                   Toggle stealth mode (hide server from IP-based discovery)
 ```
 
-### Neo+ License
+### License (free, required)
 ```
-neo plus                      Interactive license management menu
-neo plus activate <key>       Activate license on this machine
-neo plus status               Show current license state
-neo plus deactivate           Remove license from machine
+neo activate                  Register a free license by email (prompts, POST /register)
+neo activate <key>            Activate an existing key on this machine
+neo license                   Interactive license management menu (plus = hidden alias)
+neo license status            Show current license state
+neo license deactivate        Remove license from this machine
 ```
 
-Feature gates:
-- **Multi-server**: Free = 1 server, Plus = unlimited
-- **Backups**: Free = blocked, Plus = unlimited
-- **Parallel uploads**: Free = 2 streams, Plus = 5 streams
-- Max 2 device activations per license key
+Neo is **free for everyone** — there is no paid tier, and every feature is unlocked for any
+valid license. You must activate once before running commands:
+- No feature gates: **multi-server, backups, and device activations are all unlimited.**
+  Parallel image-upload streams are fixed at 3 for everyone.
+- One key works on **unlimited servers and unlimited devices**.
+- First activation needs network; after that a **3-day offline cache grace** applies.
+- Existing paid `plus`/`team` keys are **grandfathered** — they still validate and keep working.
+- `NEO_DEV_PLUS=true` (or build flag `DevLicenseBypass=true`) skips the gate for local dev.
 
-**Expired license**: All Plus features remain active after expiry — nothing is blocked. A warning banner is shown at the start of every command. `neo plus status` shows `Plus (expired)`. Renew at neo.vxero.dev.
+**Self-hosters:** the CMS `/api/license/register` endpoint must be live before rolling out the
+CLI, otherwise clients cannot activate.
 
 ### Other
 ```
@@ -240,14 +263,17 @@ neo help                      Grouped command help
 ## Workflow Guides
 
 ### First-Time Setup
-1. Get a server (any VPS) running a supported OS: Ubuntu 24.04+, Debian, Fedora 39+, CentOS/RHEL/AlmaLinux/Rocky 9+
-2. Run `neo init root@<server-ip>` — installs Docker, Caddy, and configures the server
-3. Deploy your first app: `neo deploy ./my-app --domain app.example.com`
-4. Point your domain's DNS A record to the server IP
+1. Activate the free license: `neo activate` — prompts for your email, issues a key instantly (the first command does this automatically if you skip it)
+2. Get a server (any VPS) running a supported OS: Ubuntu 24.04+, Debian, Fedora 39+, CentOS/RHEL/AlmaLinux/Rocky 9+
+3. Run `neo init root@<server-ip>` — installs Docker, Caddy, and configures the server
+4. Deploy your first app: `neo deploy ./my-app --domain app.example.com`
+5. Point your domain's DNS A record to the server IP
+
+To join a server a teammate already set up, use `neo attach root@<ip>` instead of `neo init` — it registers the live server locally without reinstalling anything.
 
 ### Deploy a Project
 1. Ensure a `Dockerfile` exists in the project root
-2. Optionally create `.neo.yml` for persistent config (see reference below)
+2. Optionally create `.neo.yml` for persistent config — scaffold one with `neo config init` (or `neo config generate` from a `docker-compose.yml`); see reference below
 3. Run `neo deploy` from the project directory
 4. Neo auto-detects: app name (from directory), port (from `EXPOSE`), and docker-compose services
 
@@ -617,5 +643,6 @@ Then: neo init root@<ip>
 - **Single domain vs multi-domain**: Use `domain:` for one domain. Use `domains:` list when an app needs multiple domains (e.g., `example.com` + `www.example.com`). Use `--add`/`--remove` flags for incremental changes.
 - **Wildcard: DNS-01 vs on-demand**: Use `neo caddy dns` (ACME DNS-01) when you know the wildcard up front and have a DNS provider token — one real wildcard cert, works for internal subdomains too. Use `neo caddy ondemand` for unbounded/dynamic tenant subdomains where you can't pre-list hostnames — Caddy issues per-host certs on demand, gated by your app's ask URL.
 - **Cloudflare Flexible SSL**: If Cloudflare terminates TLS at its edge and talks HTTP to your origin, use `--cloudflare-flexible` / `edge_https: true` — origin serves HTTP but the app still sees `https` via forwarded headers. Without it you get redirect loops.
-- **Neo+ features**: `neo backup`, `neo restore`, and multi-server require a Neo+ license. Free tier: 1 server, 2 parallel upload streams. Run `neo plus activate <key>` to unlock.
+- **Licensing**: Neo is free but every user must activate once (`neo activate`). There's no paid tier and no feature gates — `neo backup`, `neo restore`, and unlimited multi-server all work for everyone. Old paid `plus`/`team` keys are grandfathered.
+- **`neo init` vs `neo attach`**: Use `init` on a fresh VPS to install Docker + Caddy. Use `attach` to register a server a teammate already initialized — it never reinstalls or overwrites remote state.
 - **Debugging**: Add `--debug` to any command to see the SSH commands being executed. Use `neo logs <app> -g "error"` to filter log output. Use `neo status --json` for machine-readable health data.
