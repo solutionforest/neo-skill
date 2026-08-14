@@ -160,7 +160,7 @@ neo env import <app> .env      Bulk import from file
 ```
 neo service create [type] [name]      Create service (mysql, postgres, redis, mariadb)
 neo service list                      List services with linked apps
-neo service info <svc>                Show service details
+neo service info <svc>                Show connection details: host, port, user, password, database, URL (retrievable anytime)
 neo service link <svc> <app>          Create DB + user, inject DATABASE_URL/DB_* env vars
 neo service unlink <svc> <app>        Remove link (data preserved)
 neo service start|stop|restart <svc>  Manage lifecycle
