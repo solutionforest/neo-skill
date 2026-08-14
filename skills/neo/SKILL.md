@@ -497,9 +497,12 @@ ssl:
   private_key: certs/key.pem
 
 # HTTP Basic Auth (Caddy proxy layer — app container unaffected)
+# user/password/bypass support ${VAR} and ${VAR:-default}, resolved at deploy from
+# env/env_file/OS env — keep the secret in a gitignored env_file. Persisted to
+# server state, so neo domain / neo caddy update keep auth applied (don't strip it).
 basic_auth:
-  user: admin
-  password: secret
+  user: ${NEO_BASIC_AUTH_USER:-admin}
+  password: ${NEO_BASIC_AUTH_PASSWORD}
   bypass:                       # Paths that skip auth
     - /api/*
     - /webhooks/*
