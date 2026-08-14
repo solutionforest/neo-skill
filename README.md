@@ -7,7 +7,7 @@ Works with **Claude Code, GitHub Copilot, Cursor, Windsurf, Cline, OpenAI Codex*
 ## Install Neo
 
 ```bash
-curl -fsSL https://get.vxero.dev/neo/install.sh | sh
+curl -fsSL https://neo.vxero.dev/neo | sh
 ```
 
 Installs the latest `neo` binary to `/usr/local/bin`. Supports macOS, Linux, and Windows (Git Bash).
@@ -22,7 +22,7 @@ neo help                           # grouped command reference
 
 Once installed, your AI assistant understands:
 
-- **All 30+ neo commands** — deploy, init, env, service, domain, caddy (wildcard SSL), dev, firewall, backup, tunnel, etc.
+- **All 40+ neo commands** — deploy, init, env, service, domain, caddy (wildcard SSL), dev, firewall, backup, tunnel, etc.
 - **`.neo.yml` configuration** — every field, volume formats, workers, sidecars, hooks, environments
 - **Common workflows** — first-time server setup, deploying projects, adding databases, SSL, multi-env deploys
 - **Troubleshooting** — deploy failures, domain/SSL issues, service linking, SSH problems
@@ -47,7 +47,7 @@ The assistant reads your project files (`.neo.yml`, `Dockerfile`, `docker-compos
 Auto-detect which AI tools are configured and install the right files:
 
 ```bash
-git clone https://github.com/solutionforestteam/neo-skill.git
+git clone https://github.com/solutionforest/neo-skill.git
 cd neo-skill
 ./install.sh /path/to/your/project
 ```
