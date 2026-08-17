@@ -118,6 +118,9 @@ neo domain <app> <domain>     Set domain (auto-provisions SSL via Caddy)
                                    HTTPS scheme to the app (X-Forwarded-Proto: https)
 
 neo caddy update               Pull the latest caddy:2-alpine and recreate neo-caddy
+neo caddy routes               Show the routes Caddy is actually serving (incl. auth state)
+neo caddy reload               Rebuild every route from server state (drift repair)
+  --app <name>                   Rebuild one app's route only
                                  (routes + TLS certs preserved; rebuilds a custom DNS
                                  build from its stored Dockerfile with a fresh base layer)
 
@@ -146,9 +149,28 @@ neo env <app>                 View env vars (secrets masked)
 neo env set <app> K=V [K=V]   Set env vars (auto-restarts container)
 neo env unset <app> KEY        Remove env var
 neo env import <app> .env      Bulk import from file
+
+neo env encrypt [file]         Encrypt .env -> .env.encrypted (commit it; key printed once)
+  --key <key>                    Use an existing key instead of generating one
+  --force                        Overwrite an existing encrypted file
+  --prune                        Delete the plaintext file after encrypting
+
+neo env decrypt [file]         Decrypt an encrypted env file
+  --stdout                       Print instead of writing a file
+
+neo env key set <app> [key]    Save the encryption key for an app
+neo env key list               List saved keys (masked)
+neo env key forget <app>       Remove a saved key
 ```
 
-**Deploy env var priority** (highest wins): `--env` flag > `--env-file` > `.neo.yml` env > `docker-compose.yml` > server state (redeploy)
+**Deploy env var priority** (highest wins): `--env` flag > `--env-file` > `.neo.yml` env > `.neo.yml` env_file > `.neo.yml` env_encrypted > `docker-compose.yml` > server state (redeploy)
+
+**Encrypted env files are Laravel's format.** A file from `php artisan env:encrypt` works
+as-is; `neo env encrypt` output is readable by `php artisan env:decrypt`. Point
+`env_encrypted:` at it in `.neo.yml` and deploy decrypts it in memory. Key lookup order:
+`--env-key` > `NEO_ENV_KEY` > `LARAVEL_ENV_ENCRYPTION_KEY` > `~/.neo/keys.json` > prompt.
+This protects the repo and the laptop — decrypted values still reach the server as
+container env vars and are stored in `/etc/neo/state.json`.
 
 ### Shared Services
 ```
@@ -249,7 +271,9 @@ CLI, otherwise clients cannot activate.
 
 ### Other
 ```
-neo sync [app]                Sync server state back to .neo.yml
+neo sync [app]                Sync server state back to .neo.yml (domain, port, https)
+  --to <environment>             Which environment block to write into
+  --dry-run                      Show the diff without writing
   --dry-run                     Show changes without writing
 neo ask                       Interactive skill assistant (guided Q&A)
 neo version                   Show version, check for updates
@@ -380,6 +404,51 @@ Deploy to all: `neo deploy --all` (builds image once, deploys to all environment
 
 **No `environments:`** — root `server:`/`domains:` work normally as before.
 
+### Laravel Deploy (encrypted secrets + migrations)
+The full shape for a framework app whose secrets live in git and whose deploys run
+migrations:
+
+```bash
+# 1. Encrypt .env once. The key is printed once — store it in a password manager.
+php artisan env:encrypt          # or: neo env encrypt   (no PHP needed)
+
+# 2. Commit .env.encrypted. Keep .env gitignored.
+```
+
+```yaml
+# .neo.yml
+name: my-app
+port: 8080
+dockerfile: ./docker/Dockerfile
+env_encrypted: .env.encrypted    # decrypted in memory at deploy
+
+release:                         # run in the new container, before traffic switches
+  - php artisan migrate --force
+  - php artisan storage:link
+  - php artisan config:cache
+
+workers:
+  queue:
+    command: php artisan queue:work --tries=3
+
+environments:
+  production:
+    server: prod-box
+    domain: app.example.com
+```
+
+```bash
+# 3. Deploy. Prompts once for the key, offers to save it for next time.
+neo deploy --to production
+
+# CI: no prompt
+NEO_ENV_KEY=base64:xxxxx neo deploy --to production
+```
+
+If `migrate` fails, the new container is removed and the old one keeps serving — the
+deploy aborts rather than putting a half-migrated app live. Release commands must exit;
+`queue:work` belongs in `workers:`, not `release:`.
+
 ### Horizontal Scaling
 Add `scale: N` to `.neo.yml` to run multiple app replicas. Caddy round-robin load-balances across them automatically.
 
@@ -422,11 +491,14 @@ edge_https: true                # HTTP origin behind an HTTPS edge (Cloudflare F
 
 # Environment
 env_file: .env.production       # Load env vars from file
+env_encrypted: .env.encrypted   # Committed encrypted env file (Laravel env:encrypt format)
 env:                            # Env var defaults (non-sensitive values only)
   APP_ENV: production
   LOG_LEVEL: info
 
 # Docker
+dockerfile: ./docker/Dockerfile # Dockerfile path, relative to project root (default: ./Dockerfile)
+                                #   build context is ALWAYS the project root, wherever this points
 compose_service: app            # Which docker-compose service to extract (if auto-detect fails)
 restart: unless-stopped         # Docker restart policy
 
@@ -437,6 +509,14 @@ health:
   timeout: 10s
   retries: 3
   start_period: 40s
+
+# Release commands — run INSIDE the new container on the server, after its health
+# check and BEFORE Caddy switches traffic. A failure removes the new container and
+# aborts, so the old version keeps serving. Each command must exit (not a server).
+# Scaled apps run the list once, in the first new replica.
+release:
+  - php artisan migrate --force
+  - php artisan config:cache
 
 # Deploy lifecycle hooks (run locally via sh -c)
 # Available env: NEO_APP, NEO_ENV, NEO_DOMAIN, NEO_SERVER
@@ -518,6 +598,8 @@ dev:
 #   - root server: and domains: are IGNORED (neo errors if present)
 #   - every environment MUST have server:
 #   - root env:, workers:, volumes: are inherited by all environments
+#   - env_file:, env_encrypted:, dockerfile:, release:, hooks: REPLACE the root value
+#   - deploy --all builds one image, so environments must agree on dockerfile:
 environments:
   staging:
     name: my-app-staging        # Separate container name = separate Docker volumes
@@ -528,6 +610,10 @@ environments:
     env:
       APP_ENV: staging
     env_file: .env.staging
+    env_encrypted: .env.staging.encrypted   # per-environment secrets
+    dockerfile: ./docker/Dockerfile.staging # per-environment build file
+    release:                                # replaces the root release: list
+      - php artisan migrate --force
     basic_auth:
       user: admin
       password: secret
@@ -601,6 +687,33 @@ environments:
 6. For custom certs: `neo domain <app> <domain> --cert cert.pem --key key.pem`
 7. Wildcard (`*.example.com`) needs DNS-01 or on-demand TLS first — set up with `neo caddy dns` or `neo caddy ondemand`, else Caddy can't issue the cert
 8. Redirect loop / "too many redirects" behind Cloudflare: you're on Flexible SSL but the origin expects HTTPS — switch the origin to HTTP with `neo domain <app> --cloudflare-flexible` (or `edge_https: true`)
+
+### Basic auth not being enforced
+Caddy applies config through its admin API, so there is no reload step in a healthy
+setup — a deploy takes effect immediately. If the browser still isn't asking for
+credentials:
+1. `neo caddy routes` — the AUTH column shows what the proxy is really serving. `none`
+   means the live route has no auth handler, whatever `.neo.yml` says.
+2. `neo caddy reload --app <app>` rebuilds the route from server state. No redeploy needed.
+3. `neo caddy update` is NOT this — it updates the Caddy image, not the routes.
+4. Check the password resolved: an unset `${VAR}` leaves the literal text as the
+   credential and every login fails. Deploy warns when this happens.
+
+### neo list says "No apps installed" but containers are running
+Server state (`/etc/neo/state.json`) and the server disagree — a lost state write, or a
+container removed with plain `docker rm`.
+1. `neo list` reports the drift directly: apps running but untracked, tracked but with no
+   container, or present but stopped. The dashboard shows `⚠ N untracked`.
+2. Untracked apps: redeploy them (`neo deploy --to <environment>`) to restore the record.
+3. Tracked but missing: redeploy, or drop the record with `neo remove <app>`.
+4. `neo list --json` exposes the same under a `drift` key for scripts.
+
+### Deploy fails right after neo sync
+Older Neo versions wrote `domain:` at the ROOT of `.neo.yml` even when `environments:`
+were defined — the one combination deploy rejects ("root-level domain:/domains: is
+ignored when environments: are defined"). Delete the root `domain:` line; the
+per-environment one is the real one. Fixed in 0.24.4, which writes into the environment
+block and no longer rewrites comments or formatting.
 
 ### Service linking issues
 1. After `neo service link`, check injected vars: `neo env <app>` — look for `DATABASE_URL`
