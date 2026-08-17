@@ -499,6 +499,9 @@ env:                            # Env var defaults (non-sensitive values only)
 # Docker
 dockerfile: ./docker/Dockerfile # Dockerfile path, relative to project root (default: ./Dockerfile)
                                 #   build context is ALWAYS the project root, wherever this points
+command: php artisan octane:start  # Override the image CMD. String or list form:
+                                #   command: ["sh", "-lc", "php artisan octane:start"]
+                                #   MUST be a long-running process — see command: vs release: below
 compose_service: app            # Which docker-compose service to extract (if auto-detect fails)
 restart: unless-stopped         # Docker restart policy
 
@@ -510,6 +513,14 @@ health:
   retries: 3
   start_period: 40s
 
+# command: vs release: — the two are not interchangeable.
+#   command:  replaces the container's MAIN PROCESS. It has to keep running.
+#             Use for: Octane/server flags per environment, a different entrypoint
+#             from a shared image. Setting it to a one-off task (storage:link, a
+#             migration) makes the container exit immediately and the deploy roll
+#             back; neo names command: as the cause when that happens.
+#   release:  one-off tasks that exit, run in the container before traffic switches.
+#
 # Release commands — run INSIDE the new container on the server, after its health
 # check and BEFORE Caddy switches traffic. A failure removes the new container and
 # aborts, so the old version keeps serving. Each command must exit (not a server).
@@ -598,7 +609,7 @@ dev:
 #   - root server: and domains: are IGNORED (neo errors if present)
 #   - every environment MUST have server:
 #   - root env:, workers:, volumes: are inherited by all environments
-#   - env_file:, env_encrypted:, dockerfile:, release:, hooks: REPLACE the root value
+#   - env_file:, env_encrypted:, dockerfile:, command:, release:, hooks: REPLACE the root value
 #   - deploy --all builds one image, so environments must agree on dockerfile:
 environments:
   staging:
@@ -612,6 +623,7 @@ environments:
     env_file: .env.staging
     env_encrypted: .env.staging.encrypted   # per-environment secrets
     dockerfile: ./docker/Dockerfile.staging # per-environment build file
+    command: php artisan octane:start --workers=1  # per-environment process override
     release:                                # replaces the root release: list
       - php artisan migrate --force
     basic_auth:
@@ -698,6 +710,13 @@ credentials:
 3. `neo caddy update` is NOT this — it updates the Caddy image, not the routes.
 4. Check the password resolved: an unset `${VAR}` leaves the literal text as the
    credential and every login fails. Deploy warns when this happens.
+
+### Container exits immediately / "failed health check" right after adding command:
+A container's command IS its main process. `command: php artisan storage:link` runs for
+~50ms, exits, and takes the container down — health check fails, deploy rolls back. Neo
+names command: as the likely cause when the container exited on its own.
+Move one-off tasks to `release:`, and keep `command:` for something that stays running
+(a server, a worker loop). Background jobs belong in `workers:`.
 
 ### neo list says "No apps installed" but containers are running
 Server state (`/etc/neo/state.json`) and the server disagree — a lost state write, or a
