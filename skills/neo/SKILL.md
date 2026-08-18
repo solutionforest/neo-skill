@@ -21,7 +21,7 @@ Tailor all advice to what you find. If the user has a `.neo.yml`, reference thei
 ## Important Rules
 
 - **Present commands for the user to run** — do not execute destructive operations (`neo init`, `neo deploy`, `neo remove`, `neo service remove`, `neo destroy`) directly
-- **Read-only commands are safe to run**: `neo version`, `neo servers`, `neo list`, `neo env <app>`, `neo status`, `neo volumes`, `neo help`
+- **Read-only commands are safe to run**: `neo version`, `neo servers`, `neo list`, `neo env <app>`, `neo status`, `neo status <app>`, `neo deploys <app>`, `neo volumes`, `neo help`
 - When generating `.neo.yml` configs, use only documented fields (see reference below)
 - **Neo is free but requires a free license.** The first command prompts for an email and issues a key instantly (or run `neo activate`). In CI / no-TTY it prints a "run `neo activate`" message instead. Set `NEO_DEV_PLUS=true` to bypass in local dev.
 
@@ -108,7 +108,38 @@ neo logs <app>                Stream app logs
 neo status                    Show server health and container stats
   --live                         Live-updating metrics (refreshes every 3s)
   --json                         Output as JSON
+
+neo status <app>              Full detail for ONE app: which build is deployed, the
+                              commit it came from, who deployed it, domains, containers
+  --json                         Output as JSON
+
+neo deploys <app>             Deployment history: what shipped, when, from whose machine
+  --json                         Output as JSON
 ```
+
+**Deployment versions.** Every deploy records the git commit it was built from, so
+"which code is running?" is answerable. `neo list` gains a VERSION column
+(`v1.4.2 (a1b2c3d)`, or `a1b2c3d *` when built from a dirty tree), the image tag
+becomes `neo-<app>:<timestamp>-<shortsha>`, and the container gets these variables:
+
+```
+NEO_DEPLOYMENT_ID     20260818-045536-a1b2c3d
+NEO_GIT_COMMIT        full sha
+NEO_GIT_SHORT_COMMIT  a1b2c3d
+NEO_GIT_BRANCH        main
+NEO_GIT_TAG           v1.4.2      (only when the commit is tagged)
+NEO_DEPLOYED_AT       RFC3339
+```
+
+They are injected BEFORE `.neo.yml` interpolation, so a project can wire them into
+anything without neo knowing the tool: `SENTRY_RELEASE: "${NEO_GIT_COMMIT}"`. An
+explicitly set value always wins.
+
+Git is not required — a scaffolded project shows no version, and CI shallow checkouts
+fall back to `NEO_GIT_COMMIT` / `GITHUB_SHA` / `CI_COMMIT_SHA`. History is stored
+server-side (`/etc/neo/deploys/<app>.jsonl`), so it is shared by every machine that
+deploys and survives a fresh clone; entries whose image has been pruned are marked and
+cannot be restored from the image alone.
 
 ### Domains & SSL
 ```
@@ -705,6 +736,17 @@ environments:
 6. For custom certs: `neo domain <app> <domain> --cert cert.pem --key key.pem`
 7. Wildcard (`*.example.com`) needs DNS-01 or on-demand TLS first — set up with `neo caddy dns` or `neo caddy ondemand`, else Caddy can't issue the cert
 8. Redirect loop / "too many redirects" behind Cloudflare: you're on Flexible SSL but the origin expects HTTPS — switch the origin to HTTP with `neo domain <app> --cloudflare-flexible` (or `edge_https: true`)
+
+### Which version is deployed? / did my deploy land?
+1. `neo list` — VERSION column shows tag + short commit for every app.
+2. `neo status <app>` — the full record: commit, branch, image, who deployed it, when.
+3. `neo deploys <app>` — the history, newest first.
+4. From the box itself: `neo run <app> -- printenv | grep NEO_GIT`.
+5. In CI: `neo status <app> --json | jq -r .deployment.commit` and compare to the sha you built.
+
+A `*` after the version, or "dirty" in the history, means the build contained uncommitted
+changes — the recorded commit describes only part of what shipped. Apps deployed before
+0.26.0 show no version; that record does not exist retroactively.
 
 ### Basic auth not being enforced
 Caddy applies config through its admin API, so there is no reload step in a healthy
