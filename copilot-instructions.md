@@ -17,6 +17,7 @@ Tailor all advice to what you find. If the user has a `.neo.yml`, reference thei
 - **Present commands for the user to run** — do not execute destructive operations (`neo init`, `neo deploy`, `neo remove`, `neo service remove`, `neo destroy`) directly
 - **Read-only commands are safe to run**: `neo version`, `neo servers`, `neo list`, `neo env <app>`, `neo status`, `neo status <app>`, `neo deploys <app>`, `neo volumes`, `neo help`
 - When generating `.neo.yml` configs, use only documented fields (see reference below)
+- **Message brokers and databases (RabbitMQ, Postgres, MySQL, Redis with persistence) are never sidecars.** Every deploy recreates every sidecar. Give them their own `.neo.yml` with `strategy: recreate`, or use `neo service create`. See "Stateful Apps" below
 - **Neo is free but requires a free license.** The first command prompts for an email and issues a key instantly (or run `neo activate`). In CI / no-TTY it prints a "run `neo activate`" message instead. Set `NEO_DEV_PLUS=true` to bypass in local dev.
 
 ---
@@ -128,6 +129,13 @@ NEO_DEPLOYED_AT       RFC3339
 They are injected BEFORE `.neo.yml` interpolation, so a project can wire them into
 anything without neo knowing the tool: `SENTRY_RELEASE: "${NEO_GIT_COMMIT}"`. An
 explicitly set value always wins.
+
+Every deploy that builds an image writes the commit it just built (since v0.26.12).
+`neo deploy --env-only` keeps the previous values, because it restarts the same image.
+Before v0.26.12 a redeploy kept the first deploy's values, and the workaround was
+`neo env unset <app> NEO_GIT_COMMIT NEO_GIT_SHORT_COMMIT NEO_GIT_BRANCH NEO_GIT_TAG
+NEO_DEPLOYMENT_ID NEO_DEPLOYED_AT`. Don't suggest it on v0.26.12+: `neo upgrade` and
+redeploy instead.
 
 Git is not required — a scaffolded project shows no version, and CI shallow checkouts
 fall back to `NEO_GIT_COMMIT` / `GITHUB_SHA` / `CI_COMMIT_SHA`. History is stored
@@ -493,6 +501,49 @@ scale: 3   # runs app-myapp-0, app-myapp-1, app-myapp-2
 - Can be overridden per environment: `environments.production.scale: 3`
 - WebSocket / WSS works automatically — Caddy proxies upgrade headers transparently
 
+### WebSockets and Long-Lived Connections
+Every route change (any app's deploy, `neo domain`, `neo caddy reload`, redirects) makes
+Caddy load a whole new config. By default Caddy closes every open WebSocket on the
+server when that happens. Since v0.26.13 neo sets `stream_close_delay: 24h` on every
+route, so open connections keep running and are only closed 24h after a change.
+
+- Routes get the setting when rewritten: after `neo upgrade`, run `neo caddy reload`
+  once at a quiet time (that one run still drops current connections).
+- Redeploying the app that holds the connection still disconnects its clients — that
+  container is replaced.
+- Traffic that doesn't pass through neo-caddy (AMQP between containers, a database
+  connection) is never affected by Caddy. If such a connection drops on deploy, look at
+  what the deploy recreated (sidecars!), not at Caddy.
+
+### Stateful Apps (message brokers, databases)
+Redeploys are blue-green by default: `app-<name>-next` starts beside the old container
+on the same volumes, then the old one is `rm -f`'d. For a broker or database that means
+two processes on one data directory, an unclean kill, and a new random hostname each
+time. RabbitMQ keeps data per node name (`rabbit@<hostname>`), so every redeploy came up
+as an empty node and vhosts, users and queues seemed to vanish.
+
+```yaml
+# .neo.yml — RabbitMQ as its own app
+name: e-hub-rabbitmq
+port: 15672
+strategy: recreate      # stop old (up to 60s clean shutdown), then start new
+# hostname: rabbitmq    # optional — defaults to the app name under recreate
+volumes:
+  data: /var/lib/rabbitmq
+```
+
+- Trade-off: a short outage while the new container starts, and nothing to fall back
+  to if it fails. Neo then exits non-zero, says the app is down, and keeps the failed
+  container for `neo logs <app>`.
+- The hostname is saved in state and kept by `--env-only`, `neo env set/unset/import`,
+  `neo update` and `neo volumes mount`.
+- `strategy: recreate` can't be combined with `scale:`. Both keys work per environment.
+- Switching an existing RabbitMQ app: the first recreate deploy changes the node name
+  once (to `rabbit@<app-name>`), so it starts empty. Tell the user to run
+  `rabbitmqctl export_definitions` first, or check `neo env <app>` for
+  `RABBITMQ_NODENAME` (if set, nothing changes).
+- Requires neo v0.26.14+.
+
 ### Available App Templates
 `neo install` offers these pre-configured templates:
 Ghost, WordPress, Gitea, n8n, Plausible, Umami, Miniflux, Chatwoot, Uptime Kuma, Vaultwarden
@@ -535,6 +586,8 @@ command: php artisan octane:start  # Override the image CMD. String or list form
                                 #   MUST be a long-running process — see command: vs release: below
 compose_service: app            # Which docker-compose service to extract (if auto-detect fails)
 restart: unless-stopped         # Docker restart policy
+strategy: recreate              # blue-green (default) | recreate — for brokers/databases (v0.26.14+)
+hostname: rabbitmq              # Fixed container hostname (default: app name under recreate)
 
 # Health check
 health:
@@ -586,6 +639,7 @@ workers:
     health_check: "curl -f http://localhost:9090/health"
 
 # Sidecar containers (separate image, same Docker network)
+# Recreated on EVERY deploy — fine for caches, wrong for brokers/databases.
 sidecars:
   redis:
     image: redis:7-alpine
